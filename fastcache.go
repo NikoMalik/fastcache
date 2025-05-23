@@ -257,7 +257,7 @@ func (b *bucket) Init(maxBytes uint64) {
 	}
 	maxChunks := (maxBytes + chunkSize - 1) / chunkSize
 	b.chunks = make([][]byte, maxChunks)
-	b.m = make(map[uint64]uint64)
+	// b.m = make(map[uint64]uint64)
 	b.Reset()
 }
 
@@ -271,11 +271,17 @@ func (b *bucket) Reset() {
 	b.m = make(map[uint64]uint64)
 	b.idx = 0
 	b.gen = 1
-	atomic.StoreUint64(&b.getCalls, 0)
-	atomic.StoreUint64(&b.setCalls, 0)
-	atomic.StoreUint64(&b.misses, 0)
-	atomic.StoreUint64(&b.collisions, 0)
-	atomic.StoreUint64(&b.corruptions, 0)
+	// atomic.StoreUint64(&b.getCalls, 0)
+	// atomic.StoreUint64(&b.setCalls, 0)
+	// atomic.StoreUint64(&b.misses, 0)
+	// atomic.StoreUint64(&b.collisions, 0)
+	// atomic.StoreUint64(&b.corruptions, 0)
+
+	b.getCalls = 0
+	b.setCalls = 0
+	b.misses = 0
+	b.collisions = 0
+	b.corruptions = 0
 	b.mu.Unlock()
 }
 
@@ -318,7 +324,7 @@ func (b *bucket) UpdateStats(s *Stats) {
 	s.EntriesCount += uint64(len(b.m))
 	bytesSize := uint64(0)
 	for _, chunk := range b.chunks {
-		bytesSize += uint64(cap(chunk))
+		bytesSize += uint64(len(chunk))
 	}
 	s.BytesSize += bytesSize
 	s.MaxBytesSize += uint64(len(b.chunks)) * chunkSize
