@@ -5,6 +5,10 @@ import (
 	"os"
 	"sync"
 	"testing"
+
+	xxhash "github.com/cespare/xxhash/v2"
+	wyhash "github.com/orisano/wyhash/v4"
+	wyhashv1 "github.com/zeebo/wyhash"
 )
 
 func BenchmarkSaveToFile(b *testing.B) {
@@ -13,6 +17,28 @@ func BenchmarkSaveToFile(b *testing.B) {
 			benchmarkSaveToFile(b, concurrency)
 		})
 	}
+}
+
+func BenchmarkHash(b *testing.B) {
+	key := []byte("testkey123")
+	seed := uint64(12345)
+	b.Run("wyhash", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			wyhash.Sum64(seed, key)
+		}
+	})
+
+	b.Run("wyhash1", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			wyhashv1.Hash(key, seed)
+		}
+	})
+
+	b.Run("xxhash", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			xxhash.Sum64(key)
+		}
+	})
 }
 
 func benchmarkSaveToFile(b *testing.B, concurrency int) {

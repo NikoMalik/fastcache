@@ -4,87 +4,59 @@ import (
 	"bytes"
 	"strconv"
 	"testing"
+
+	wyhash "github.com/orisano/wyhash/v4"
 )
 
 func TestGenerationOverflow(t *testing.T) {
-	c := New(1) // each bucket has 64 *1024 bytes capacity
+	c := New(1)
 
-	// Initial generation is 1
-	genVal(t, c, 1)
+	key1, key2 := findKeysForBucket(0)
+	if key1 == nil || key2 == nil {
+		t.Fatalf("Failed to find keys for the same bucket")
+	}
 
-	// These two keys has to the same bucket (100), so we can push the
-	// generations up much faster.  The keys and values are sized so that
-	// every time we push them into the cache they will completely fill the
-	// bucket
-	key1 := []byte(strconv.Itoa(26))
-	bigVal1 := make([]byte, (32*1024)-(len(key1)+4))
+	h1 := wyhash.Sum64(0, key1)
+	bucketIdx := h1 % bucketsCount
+
+	bigVal1 := make([]byte, 1024)
 	for i := range bigVal1 {
 		bigVal1[i] = 1
 	}
-	key2 := []byte(strconv.Itoa(8))
-	bigVal2 := make([]byte, (32*1024)-(len(key2)+5))
+	bigVal2 := make([]byte, 1024)
 	for i := range bigVal2 {
 		bigVal2[i] = 2
 	}
 
-	// Do some initial Set/Get demonstrate that this works
-	for i := 0; i < 10; i++ {
-		c.Set(key1, bigVal1)
-		c.Set(key2, bigVal2)
-		getVal(t, c, key1, bigVal1)
-		getVal(t, c, key2, bigVal2)
-		genVal(t, c, uint64(1+i))
+	genVal := func(t *testing.T, c *Cache, bucketIdx uint64, expected uint64) {
+		t.Helper()
+		actual := c.buckets[bucketIdx].gen
+		if actual != expected {
+			t.Fatalf("Expected generation to be %d found %d instead for bucket %d", expected, actual, bucketIdx)
+		}
 	}
 
-	// This is a hack to simulate calling Set 2^24-3 times
-	// Actually doing this takes ~24 seconds, making the test slow
-	c.buckets[100].gen = (1 << 24) - 2
+	c.Set(key1, bigVal1)
+	getVal(t, c, key1, bigVal1)
+	c.Set(key2, bigVal2)
+	getVal(t, c, key2, bigVal2)
+	genVal(t, c, bucketIdx, 1) // 1
 
-	// c.buckets[100].gen == 16,777,215
-	// Set/Get still works
+	c.buckets[bucketIdx].gen = (1 << 24) - 2
 
 	c.Set(key1, bigVal1)
-	c.Set(key2, bigVal2)
-
 	getVal(t, c, key1, bigVal1)
+	c.Set(key2, bigVal2)
 	getVal(t, c, key2, bigVal2)
+	genVal(t, c, bucketIdx, (1<<24)-2)
 
-	genVal(t, c, (1<<24)-1)
-
-	// After the next Set operations
-	// c.buckets[100].gen == 16,777,216
-
-	// This set creates an index where `idx | (b.gen << bucketSizeBits)` == 0
-	// The value is in the cache but is unreadable by Get
+	c.buckets[bucketIdx].gen = maxGen // 16777215 for genSizeBits=24
 	c.Set(key1, bigVal1)
-
-	// The Set above overflowed the bucket's generation. This means that
-	// key2 is still in the cache, but can't get read because key2 has a
-	// _very large_ generation value and appears to be from the future
-	getVal(t, c, key2, bigVal2)
-
-	// This Set creates an index where `(b.gen << bucketSizeBits)>>bucketSizeBits)==0`
-	// The value is in the cache but is unreadable by Get
-	c.Set(key2, bigVal2)
-
-	// Ensure generations are working as we expect
-	// NB: Here we skip the 2^24 generation, because the bucket carefully
-	// avoids `generation==0`
-	genVal(t, c, (1<<24)+1)
-
 	getVal(t, c, key1, bigVal1)
+	c.Set(key2, bigVal2)
 	getVal(t, c, key2, bigVal2)
-
-	// Do it a few more times to show that this bucket is now unusable
-	for i := 0; i < 10; i++ {
-		c.Set(key1, bigVal1)
-		c.Set(key2, bigVal2)
-		getVal(t, c, key1, bigVal1)
-		getVal(t, c, key2, bigVal2)
-		genVal(t, c, uint64((1<<24)+2+i))
-	}
+	genVal(t, c, bucketIdx, maxGen)
 }
-
 func getVal(t *testing.T, c *Cache, key, expected []byte) {
 	t.Helper()
 	get := c.Get(nil, key)
@@ -93,11 +65,22 @@ func getVal(t *testing.T, c *Cache, key, expected []byte) {
 	}
 }
 
-func genVal(t *testing.T, c *Cache, expected uint64) {
+func genVal(t *testing.T, c *Cache, bucketIdx uint64, expected uint64) {
 	t.Helper()
-	actual := c.buckets[100].gen
-	// Ensure generations are working as we expect
+	actual := c.buckets[bucketIdx].gen
 	if actual != expected {
-		t.Fatalf("Expected generation to be %d found %d instead", expected, actual)
+		t.Fatalf("Expected generation to be %d found %d instead for bucket %d", expected, actual, bucketIdx)
 	}
+}
+func findKeysForBucket(seed uint64) (key1, key2 []byte) {
+	for i := 0; i < 1000; i++ {
+		k1 := []byte(strconv.Itoa(i))
+		for j := i + 1; j < 1000; j++ {
+			k2 := []byte(strconv.Itoa(j))
+			if wyhash.Sum64(seed, k1)%bucketsCount == wyhash.Sum64(seed, k2)%bucketsCount {
+				return k1, k2
+			}
+		}
+	}
+	return nil, nil
 }
