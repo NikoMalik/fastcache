@@ -9,6 +9,8 @@ import (
 )
 
 func TestCacheSmall(t *testing.T) {
+	t.Parallel()
+
 	c := New(1)
 	defer c.Reset()
 
@@ -69,6 +71,8 @@ func TestCacheSmall(t *testing.T) {
 }
 
 func TestCacheWrap(t *testing.T) {
+	t.Parallel()
+
 	c := New(bucketsCount * chunkSize * 1.5)
 	defer c.Reset()
 
@@ -120,6 +124,8 @@ func TestCacheWrap(t *testing.T) {
 }
 
 func TestCacheDel(t *testing.T) {
+	t.Parallel()
+
 	c := New(1024)
 	defer c.Reset()
 	for i := 0; i < 100; i++ {
@@ -139,6 +145,8 @@ func TestCacheDel(t *testing.T) {
 }
 
 func TestCacheBigKeyValue(t *testing.T) {
+	t.Parallel()
+
 	c := New(1024)
 	defer c.Reset()
 
@@ -162,6 +170,8 @@ func TestCacheBigKeyValue(t *testing.T) {
 }
 
 func TestCacheSetGetSerial(t *testing.T) {
+	t.Parallel()
+
 	itemsCount := 10000
 	c := New(30 * itemsCount)
 	defer c.Reset()
@@ -171,6 +181,8 @@ func TestCacheSetGetSerial(t *testing.T) {
 }
 
 func TestCacheGetSetConcurrent(t *testing.T) {
+	t.Parallel()
+
 	itemsCount := 10000
 	const gorotines = 10
 	c := New(30 * itemsCount * gorotines)
@@ -223,6 +235,8 @@ func testCacheGetSet(c *Cache, itemsCount int) error {
 }
 
 func TestCacheResetUpdateStatsSetConcurrent(t *testing.T) {
+	t.Parallel()
+
 	c := New(12334)
 
 	stopCh := make(chan struct{})

@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-
-	xxhash "github.com/orisano/wyhash/v4"
+	"unsafe"
+	_ "unsafe"
 )
 
-const bucketsCount = 512
+const bucketsCount = 1024
+
+const BUCKET_MASK = bucketsCount - 1
+
+const PtrSize = 4 << (^uintptr(0) >> 63)
 
 const chunkSize = 64 * 1024
 
@@ -101,14 +105,13 @@ func (bs *BigStats) reset() {
 //
 // It has much lower impact on GC comparing to a simple `map[string][]byte`.
 //
-// Use New or LoadFromFile* for creating new cache instance.
-// Concurrent goroutines may call any Cache methods on the same cache instance.
-//
+
 // Call Reset when the cache is no longer needed. This reclaims the allocated
 // memory.
 type Cache struct {
 	buckets  [bucketsCount]bucket
 	bigStats BigStats
+	seed     uint64
 }
 
 // New returns new cache with the given maxBytes capacity in bytes.
@@ -123,10 +126,35 @@ func New(maxBytes int) *Cache {
 	}
 	var c Cache
 	maxBucketBytes := uint64((maxBytes + bucketsCount - 1) / bucketsCount)
-	for i := range c.buckets[:] {
+	for i := 0; i < bucketsCount; i++ {
 		c.buckets[i].Init(maxBucketBytes)
+
 	}
+	c.seed = runtime_rand()
 	return &c
+}
+
+//go:linkname runtime_rand runtime.rand
+func runtime_rand() uint64
+
+//go:linkname runtime_memhash runtime.memhash
+//go:noescape
+func runtime_memhash(p unsafe.Pointer, seed, s uintptr) uintptr
+
+func rthash(seed uint64, buf []byte) uint64 {
+	if len(buf) == 0 {
+		return seed
+	}
+	len := len(buf)
+	// The runtime hasher only works on uintptr. For 64-bit
+	// architectures, we use the hasher directly. Otherwise,
+	// we use two parallel hashers on the lower and upper 32 bits.
+	if PtrSize == 8 {
+		return uint64(runtime_memhash(unsafe.Pointer(&buf[0]), uintptr(seed), uintptr(len)))
+	}
+	lo := runtime_memhash(unsafe.Pointer(&buf[0]), uintptr(seed), uintptr(len))
+	hi := runtime_memhash(unsafe.Pointer(&buf[0]), uintptr(seed>>32), uintptr(len))
+	return uint64(hi)<<32 | uint64(lo)
 }
 
 // Set stores (k, v) in the cache.
@@ -143,8 +171,11 @@ func New(maxBytes int) *Cache {
 //
 // k and v contents may be modified after returning from Set.
 func (c *Cache) Set(k, v []byte) {
-	h := xxhash.Sum64(0, k)
-	idx := h % bucketsCount
+	if len(k) == 0 {
+		return
+	}
+	h := rthash(c.seed, k)
+	idx := h & BUCKET_MASK
 	c.buckets[idx].Set(k, v, h)
 }
 
@@ -156,8 +187,12 @@ func (c *Cache) Set(k, v []byte) {
 //
 // k contents may be modified after returning from Get.
 func (c *Cache) Get(dst, k []byte) []byte {
-	h := xxhash.Sum64(0, k)
-	idx := h % bucketsCount
+	if len(k) == 0 {
+		return nil
+	}
+
+	h := rthash(c.seed, k)
+	idx := h & BUCKET_MASK
 	dst, _ = c.buckets[idx].Get(dst, k, h, true)
 	return dst
 }
@@ -166,15 +201,22 @@ func (c *Cache) Get(dst, k []byte) []byte {
 // exists in the cache. This method makes it possible to differentiate between a
 // stored nil/empty value versus and non-existing value.
 func (c *Cache) HasGet(dst, k []byte) ([]byte, bool) {
-	h := xxhash.Sum64(0, k)
-	idx := h % bucketsCount
+	if len(k) == 0 {
+		return nil, false
+	}
+
+	h := rthash(c.seed, k)
+	idx := h & BUCKET_MASK
 	return c.buckets[idx].Get(dst, k, h, true)
 }
 
 // Has returns true if entry for the given key k exists in the cache.
 func (c *Cache) Has(k []byte) bool {
-	h := xxhash.Sum64(0, k)
-	idx := h % bucketsCount
+	if len(k) == 0 {
+		return false
+	}
+	h := rthash(c.seed, k)
+	idx := h & BUCKET_MASK
 	_, ok := c.buckets[idx].Get(nil, k, h, false)
 	return ok
 }
@@ -183,16 +225,22 @@ func (c *Cache) Has(k []byte) bool {
 //
 // k contents may be modified after returning from Del.
 func (c *Cache) Del(k []byte) {
-	h := xxhash.Sum64(0, k)
-	idx := h % bucketsCount
+	h := rthash(c.seed, k)
+	idx := h & BUCKET_MASK
 	c.buckets[idx].Del(h)
 }
 
 // Reset removes all the items from the cache.
 func (c *Cache) Reset() {
-	for i := range c.buckets[:] {
-		c.buckets[i].Reset()
+	var wg sync.WaitGroup
+	for i := 0; i < bucketsCount; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			c.buckets[idx].Reset()
+		}(i)
 	}
+	wg.Wait()
 	c.bigStats.reset()
 }
 
@@ -200,8 +248,9 @@ func (c *Cache) Reset() {
 //
 // Call s.Reset before calling UpdateStats if s is re-used.
 func (c *Cache) UpdateStats(s *Stats) {
-	for i := range c.buckets[:] {
+	for i := 0; i < bucketsCount; i++ {
 		c.buckets[i].UpdateStats(s)
+
 	}
 	s.GetBigCalls += atomic.LoadUint64(&c.bigStats.GetBigCalls)
 	s.SetBigCalls += atomic.LoadUint64(&c.bigStats.SetBigCalls)
@@ -211,12 +260,6 @@ func (c *Cache) UpdateStats(s *Stats) {
 	s.InvalidValueHashErrors += atomic.LoadUint64(&c.bigStats.InvalidValueHashErrors)
 }
 
-func (c *Cache) ReloadFromFile(path string) error {
-	c.Reset()
-	var err error
-	c, err = load(c, path, 0)
-	return err
-}
 func (c *Cache) Close() error {
 	c.Reset()
 	return clearChunks()
@@ -236,8 +279,7 @@ type bucket struct {
 	idx uint64
 
 	// gen is the generation of chunks.
-	gen uint64
-
+	gen         uint64
 	getCalls    uint64
 	setCalls    uint64
 	misses      uint64
@@ -420,7 +462,7 @@ func (b *bucket) Get(dst, k []byte, h uint64, returnDst bool) ([]byte, bool) {
 				atomic.AddUint64(&b.corruptions, 1)
 				goto end
 			}
-			if string(k) == string(chunk[idx:idx+keyLen]) {
+			if String(k) == String(chunk[idx:idx+keyLen]) {
 				idx += keyLen
 				if returnDst {
 					dst = append(dst, chunk[idx:idx+valLen]...)

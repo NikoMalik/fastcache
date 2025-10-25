@@ -9,6 +9,7 @@ import (
 )
 
 func TestGenerationOverflow(t *testing.T) {
+	t.Parallel()
 	c := New(1)
 
 	key1, key2 := findKeysForBucket(0)
